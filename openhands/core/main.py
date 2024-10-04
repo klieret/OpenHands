@@ -22,6 +22,7 @@ from openhands.events.action.action import Action
 from openhands.events.event import Event
 from openhands.events.observation import AgentStateChangedObservation
 from openhands.llm.llm import LLM
+from openhands.memory.conversation_memory import ConversationMemory
 from openhands.runtime import get_runtime_cls
 from openhands.runtime.runtime import Runtime
 from openhands.storage import get_file_store
@@ -114,6 +115,9 @@ async def run_controller(
 
     event_stream = runtime.event_stream
 
+    # initialize the conversation memory for the agent
+    memory = ConversationMemory(event_stream=event_stream)
+
     # Create the agent
     if agent is None:
         agent_cls: Type[Agent] = Agent.get_cls(config.default_agent)
@@ -122,7 +126,7 @@ async def run_controller(
         agent = agent_cls(
             llm=LLM(config=llm_config),
             config=agent_config,
-            event_stream=event_stream,
+            memory=memory,
         )
 
     # restore cli session if enabled
@@ -151,11 +155,26 @@ async def run_controller(
         controller.agent_task = asyncio.create_task(controller.start_step_loop())
 
     assert isinstance(task_str, str), f'task_str must be a string, got {type(task_str)}'
-    # Logging
+
     logger.info(
         f'Agent Controller Initialized: Running agent {agent.name}, model '
         f'{agent.llm.config.model}, with task: "{task_str}"'
     )
+
+    # subscribe to the event stream to be notified
+    async def on_event(event: Event):
+        if isinstance(event, AgentStateChangedObservation):
+            if event.agent_state == AgentState.AWAITING_USER_INPUT:
+                if exit_on_message:
+                    message = '/exit'
+                elif fake_user_response_fn is None:
+                    message = input('Request user input >> ')
+                else:
+                    message = fake_user_response_fn(controller.get_state())
+                action = MessageAction(content=message)
+                event_stream.add_event(action, EventSource.USER)
+
+    event_stream.subscribe(EventStreamSubscriber.MAIN, on_event)
 
     # start event is a MessageAction with the task, either resumed or new
     if config.enable_cli_session and initial_state is not None:
@@ -173,19 +192,6 @@ async def run_controller(
         # init with the provided task
         event_stream.add_event(MessageAction(content=task_str), EventSource.USER)
 
-    async def on_event(event: Event):
-        if isinstance(event, AgentStateChangedObservation):
-            if event.agent_state == AgentState.AWAITING_USER_INPUT:
-                if exit_on_message:
-                    message = '/exit'
-                elif fake_user_response_fn is None:
-                    message = input('Request user input >> ')
-                else:
-                    message = fake_user_response_fn(controller.get_state())
-                action = MessageAction(content=message)
-                event_stream.add_event(action, EventSource.USER)
-
-    event_stream.subscribe(EventStreamSubscriber.MAIN, on_event)
     while controller.state.agent_state not in [
         AgentState.FINISHED,
         AgentState.REJECTED,
