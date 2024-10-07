@@ -8,6 +8,7 @@ from openhands.core.logger import openhands_logger as logger
 from openhands.core.utils import json
 from openhands.events.action.action import Action
 from openhands.events.action.agent import (
+    AgentDelegateAction,
     ChangeAgentStateAction,
 )
 from openhands.events.action.empty import NullAction
@@ -46,7 +47,6 @@ class EventStream:
         ChangeAgentStateAction,
         AgentStateChangedObservation,
     )
-    delegates: dict[int, tuple[str, str, int]]
 
     def __init__(self, sid: str, file_store: FileStore):
         self.sid = sid
@@ -54,7 +54,6 @@ class EventStream:
         self._subscribers = {}
         self._cur_id = 0
         self._lock = threading.Lock()
-        self.delegates = {}
         self._reinitialize_from_file_store()
 
     def _reinitialize_from_file_store(self) -> None:
@@ -97,19 +96,13 @@ class EventStream:
             start_id: The starting event ID. Defaults to 0.
             end_id: The ending event ID. Defaults to the latest event.
             reverse: Whether to iterate in reverse order. Defaults to False.
+            include_delegates: Whether to include delegate events. Defaults to False.
             filter_out_types: Event types to filter out. Defaults to the built-in filter_out.
 
         Yields:
             Event: Events from the stream that match the criteria.
         """
 
-        # if start_id is None:
-        #    start_id = self.state.start_id if self.state.start_id != -1 else 0
-        # if end_id is None:
-        #    end_id = self.state.end_id if self.state.end_id != -1 else self._cur_id - 1
-
-        # start_id and end_id are necessary for delegates' events
-        # TODO: replace with first action and last observation
         start_id = 0 if start_id is None else start_id
         end_id = self._cur_id - 1 if end_id is None else end_id
 
@@ -117,12 +110,33 @@ class EventStream:
             filter_out_types if filter_out_types is not None else self.filter_out
         )
 
+        if not include_delegates:
+            delegate_ranges: list[tuple[int, int]] = []
+            open_delegate_start: int | None = None
+
+            # First pass: Identify delegate event ranges by iterating forward
+            for eid in range(start_id, end_id + 1):
+                try:
+                    event = self.get_event(eid)
+                except FileNotFoundError:
+                    logger.debug(f'No event found for ID {eid}')
+                    continue
+
+                if isinstance(event, AgentDelegateAction):
+                    open_delegate_start = eid
+                elif (
+                    isinstance(event, AgentDelegateObservation)
+                    and open_delegate_start is not None
+                ):
+                    delegate_ranges.append((open_delegate_start, eid))
+                    open_delegate_start = None
+
+        # Define the event range based on reverse flag
         event_range = (
             range(end_id, start_id - 1, -1) if reverse else range(start_id, end_id + 1)
         )
 
         for event_id in event_range:
-            # check if we're shutting down
             if not should_continue():
                 break
 
@@ -133,12 +147,10 @@ class EventStream:
                 if isinstance(event, exclude_types):
                     continue
 
-                # Filter out delegate events
-                if not include_delegates and any(
-                    delegate_start < event.id < delegate_end
-                    for delegate_start, (_, _, delegate_end) in self.delegates.items()
-                ):
-                    continue
+                if not include_delegates:
+                    # Check if the current event is within any delegate range
+                    if any(start < event_id < end for start, end in delegate_ranges):
+                        continue
 
                 yield event
             except FileNotFoundError:
@@ -219,9 +231,18 @@ class EventStream:
                 return True
         return False
 
-    def get_events_as_list(self, include_delegates: bool = False) -> list[Event]:
+    def get_events_as_list(
+        self,
+        start_id: int = 0,
+        end_id: int | None = None,
+        include_delegates: bool = False,
+    ) -> list[Event]:
         """Return the history as a list of Event objects."""
-        return list(self.get_events(include_delegates=include_delegates))
+        return list(
+            self.get_events(
+                start_id=start_id, end_id=end_id, include_delegates=include_delegates
+            )
+        )
 
     # history is now available as a filtered stream of events, rather than list of pairs of (Action, Observation)
     # we rebuild the pairs here

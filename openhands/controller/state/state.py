@@ -8,6 +8,7 @@ from openhands.controller.state.task import RootTask
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.metrics import Metrics
 from openhands.core.schema import AgentState
+from openhands.events.event import Event
 from openhands.storage.files import FileStore
 
 
@@ -89,6 +90,8 @@ class State:
     extra_data: dict[str, Any] = field(default_factory=dict)
     start_id: int = -1
     end_id: int = -1
+    delegates: dict[int, tuple[str, str, int]] = field(default_factory=dict)
+    history: list[Event] = field(default_factory=list)
 
     def save_to_session(self, sid: str, file_store: FileStore):
         pickled = pickle.dumps(self)

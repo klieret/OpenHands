@@ -127,6 +127,17 @@ class AgentController:
         self.state.iteration += 1
         self.state.local_iteration += 1
 
+        # get agent history
+        # NOTE: exclude the events of delegate agents that may have finished during this session
+        history: list[Event] = self.event_stream.get_events_as_list(
+            start_id=self.state.start_id,
+            end_id=self.state.end_id,
+            include_delegates=False,
+        )
+
+        # update the agent's memory
+        self.state.history = history
+
     async def update_state_after_step(self):
         # update metrics especially for cost
         self.state.local_metrics = self.agent.llm.metrics
@@ -268,7 +279,7 @@ class AgentController:
 
         # Initialize the delegate entry with end_id as None
         # end id = -1 means that the delegate has not ended yet
-        self.event_stream.delegates[delegate_start] = (
+        self.state.delegates[delegate_start] = (
             delegate_agent,
             delegate_task,
             -1,
@@ -286,9 +297,9 @@ class AgentController:
             delegate_agent,
             delegate_task,
             _,
-        ) in self.event_stream.delegates.items():
-            if self.event_stream.delegates[delegate_start][2] == -1:
-                self.event_stream.delegates[delegate_start] = (
+        ) in self.state.delegates.items():
+            if self.state.delegates[delegate_start][2] == -1:
+                self.state.delegates[delegate_start] = (
                     delegate_agent,
                     delegate_task,
                     delegate_end,
