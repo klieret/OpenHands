@@ -88,10 +88,11 @@ class State:
     # NOTE: This will never be used by the controller, but it can be used by different
     # evaluation tasks to store extra data needed to track the progress/state of the task.
     extra_data: dict[str, Any] = field(default_factory=dict)
+    # NOTE: for delegates, the start and end IDs of the events in the delegate's history
     start_id: int = -1
     end_id: int = -1
     delegates: dict[int, tuple[str, str, int]] = field(default_factory=dict)
-    history: list[Event] = field(default_factory=list)
+    _history: list[Event] = field(default_factory=list)
 
     def save_to_session(self, sid: str, file_store: FileStore):
         pickled = pickle.dumps(self)
@@ -125,3 +126,14 @@ class State:
         # first state after restore
         state.agent_state = AgentState.LOADING
         return state
+
+    @property
+    def history(self) -> list[Event]:
+        return self._history
+
+    @history.setter
+    def history(self, step_history: list[Event]):
+        """Set the history of events for the current step."""
+        if not isinstance(step_history, list):
+            raise ValueError('History must be a list of Event objects.')
+        self._history = step_history
